@@ -1,0 +1,50 @@
+{
+  "textures": {
+    "machineFrame": "assets/textures/machine-frame.png",
+    "reelBackground": "assets/textures/reel-bg.png",
+    "symbols": {
+      "diamond": "assets/textures/symbols/diamond.png",
+      "crown": "assets/textures/symbols/crown.png",
+      "trophy": "assets/textures/symbols/trophy.png",
+      "lightning": "assets/textures/symbols/lightning.png",
+      "money": "assets/textures/symbols/money.png",
+      "popcorn": "assets/textures/symbols/popcorn.png",
+      "bubble": "assets/textures/symbols/bubble.png",
+      "envelope": "assets/textures/symbols/envelope.png"
+    }
+  },
+  "sounds": {
+    "spin": "assets/sounds/spin.mp3",
+    "win": "assets/sounds/win.mp3",
+    "jackpot": "assets/sounds/jackpot.mp3",
+    "background": "assets/sounds/background.mp3",
+    "click": "assets/sounds/click.mp3",
+    "fail": "assets/sounds/fail.mp3"
+  },
+  "settings": {
+    "soundVolume": 0.7,
+    "enableVibration": true,
+    "enableNotifications": true,
+    "defaultLanguage": "en"
+  },
+  "gameConfig": {
+    "spinDuration": 3000,
+    "reelSpeed": 50,
+    "holdDurationForAutoSpin": 3000,
+    "resultDisplayTime": 3000,
+    "autoSpinDelay": 500
+  },
+  "symbols": {
+    "items": ["💎", "🍿", "💰", "⚡", "👑", "🏆", "🫩", "💌"],
+    "multipliers": {
+      "💎": 100,
+      "👑": 80,
+      "🏆": 60,
+      "⚡": 50,
+      "💰": 40,
+      "🍿": 30,
+      "🫩": 20,
+      "💌": 10
+    }
+  }
+}
