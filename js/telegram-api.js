@@ -13,25 +13,75 @@ class TelegramAPI {
         }
     }
 
-    static async processStarPayment(stars, onSuccess) {
-        if (window.Telegram?.WebApp?.sendData) {
-            const paymentData = {
-                action: 'payment',
-                currency: 'XTR',
-                total_amount: stars
-            };
-            
-            window.Telegram.WebApp.sendData(JSON.stringify(paymentData));
-            
-            // Simulate payment success
-            setTimeout(() => {
-                onSuccess();
-            }, 1000);
-        } else {
-            // Fallback for testing
-            onSuccess();
+    static async processStarPayment(stars, onSuccess, onError) {
+        if (!window.Telegram?.WebApp) {
+            const error = 'Telegram WebApp not available';
+            onError?.(error);
+            return false;
+        }
+
+        try {
+            // Get user data for payment tracking
+            const user = window.Telegram.WebApp.initDataUnsafe?.user;
+            if (!user) {
+                throw new Error('User not authenticated');
+            }
+
+            // Create invoice payload
+            const invoicePayload = JSON.stringify({
+                user_id: user.id,
+                username: user.username,
+                stars: stars,
+                timestamp: Date.now()
+            });
+
+            // Request payment from Telegram
+            window.Telegram.WebApp.openInvoice(
+                `/payment?payload=${encodeURIComponent(invoicePayload)}`,
+                (status) => {
+                    if (status === 'paid') {
+                        // Payment successful - verify on backend
+                        TelegramAPI.verifyPayment(stars, user.id)
+                            .then(() => onSuccess?.())
+                            .catch((err) => onError?.(err));
+                    } else if (status === 'cancelled') {
+                        onError?.('Payment cancelled by user');
+                    } else if (status === 'failed') {
+                        onError?.('Payment failed');
+                    }
+                }
+            );
+        } catch (error) {
+            console.error('Payment error:', error);
+            onError?.(error.message);
+            return false;
         }
         return true;
+    }
+
+    static async verifyPayment(stars, userId) {
+        try {
+            const response = await fetch('/api/verify-payment', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${window.Telegram.WebApp.initData}`
+                },
+                body: JSON.stringify({
+                    user_id: userId,
+                    stars: stars
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Payment verification failed');
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Verification error:', error);
+            throw error;
+        }
     }
 
     static sendNotification(message) {
