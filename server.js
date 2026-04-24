@@ -6,6 +6,21 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
+// Enable CORS for all routes
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+    } else {
+        next();
+    }
+});
+
+// Serve static files
+app.use(express.static('public'));
+
 // Configuration
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PAYMENT_PROVIDER_TOKEN = process.env.PAYMENT_PROVIDER_TOKEN;
@@ -13,61 +28,159 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://yourdomain.com';
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// In-memory store (replace with database in production)
-const userPayments = {};
-const userStars = {};
+// In-memory stores (replace with database in production)
+const userSessions = new Map();
+const userPayments = new Map();
+const userStars = new Map();
+const userLogins = new Map();
 
-// ==================== PAYMENT ENDPOINTS ====================
+// ==================== TELEGRAM VERIFICATION ====================
 
-// Verify payment and credit stars
-app.post('/api/verify-payment', async (req, res) => {
-    const { user_id, stars } = req.body;
-
+/**
+ * Verify Telegram user with initData
+ */
+app.post('/api/verify-telegram', async (req, res) => {
+    const { initData, userData } = req.body;
+    
     try {
-        // Verify Telegram auth token
-        const authHeader = req.headers.authorization?.replace('Bearer ', '');
-        if (!authHeader) {
-            return res.status(401).json({ error: 'Unauthorized' });
+        if (!userData || !userData.id) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing user data' 
+            });
         }
-
-        // Verify user exists
-        if (!user_id || !stars) {
-            return res.status(400).json({ error: 'Missing user_id or stars' });
-        }
-
-        // Check if payment was already processed (prevent duplicate)
-        if (userPayments[user_id]?.stars === stars && userPayments[user_id]?.processed) {
-            return res.status(400).json({ error: 'Payment already processed' });
-        }
-
-        // Credit stars to user
-        userStars[user_id] = (userStars[user_id] || 0) + stars;
-        userPayments[user_id] = {
-            stars,
+        
+        const userId = userData.id;
+        const sessionToken = generateSessionToken();
+        
+        // Store user session
+        userSessions.set(userId, {
+            token: sessionToken,
+            user: {
+                id: userData.id,
+                firstName: userData.first_name,
+                lastName: userData.last_name,
+                username: userData.username,
+                isPremium: userData.is_premium,
+                photoUrl: userData.photo_url
+            },
+            loginTime: new Date(),
+            lastActive: new Date(),
+            verified: true
+        });
+        
+        // Track login
+        userLogins.set(userId, {
             timestamp: Date.now(),
-            processed: true
-        };
-
-        console.log(`✅ Payment verified: User ${user_id} credited ${stars} stars`);
-
+            username: userData.username || `User${userId}`,
+            isPremium: userData.is_premium
+        });
+        
+        console.log(`✅ User verified: ${userData.username || userData.first_name}`);
+        
         res.json({
             success: true,
-            message: 'Payment verified and credited',
-            user_id,
-            stars,
-            total_stars: userStars[user_id]
+            message: 'Telegram user verified',
+            sessionToken: sessionToken,
+            user: {
+                id: userId,
+                username: userData.username,
+                firstName: userData.first_name
+            }
         });
     } catch (error) {
-        console.error('Verification error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Verification error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
-// Get user's star balance
+/**
+ * Get user status
+ */
+app.get('/api/user-status/:userId', (req, res) => {
+    const { userId } = req.params;
+    const session = userSessions.get(parseInt(userId));
+    
+    if (!session) {
+        return res.status(404).json({ 
+            error: 'User session not found' 
+        });
+    }
+    
+    res.json({
+        userId: userId,
+        verified: session.verified,
+        loginTime: session.loginTime,
+        lastActive: session.lastActive,
+        user: session.user
+    });
+});
+
+// ==================== PAYMENT ENDPOINTS ====================
+
+/**
+ * Verify payment and credit stars
+ */
+app.post('/api/verify-payment', async (req, res) => {
+    const { user_id, stars } = req.body;
+    
+    try {
+        // Verify user session
+        const session = userSessions.get(parseInt(user_id));
+        if (!session || !session.verified) {
+            return res.status(401).json({ 
+                success: false,
+                error: 'User not verified' 
+            });
+        }
+        
+        if (!user_id || !stars) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Missing user_id or stars' 
+            });
+        }
+        
+        // Credit stars to user
+        const currentStars = userStars.get(user_id) || 0;
+        userStars.set(user_id, currentStars + stars);
+        
+        // Track payment
+        userPayments.set(`${user_id}_${Date.now()}`, {
+            userId: user_id,
+            stars: stars,
+            timestamp: Date.now(),
+            processed: true
+        });
+        
+        console.log(`✅ Payment verified: User ${user_id} credited ${stars} stars`);
+        
+        res.json({
+            success: true,
+            message: 'Payment verified and credited',
+            user_id: user_id,
+            stars: stars,
+            total_stars: userStars.get(user_id)
+        });
+    } catch (error) {
+        console.error('❌ Verification error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+/**
+ * Get user's star balance
+ */
 app.get('/api/user-balance/:userId', (req, res) => {
     const { userId } = req.params;
-    const balance = userStars[userId] || 0;
-
+    const balance = userStars.get(userId) || 0;
+    
     res.json({
         user_id: userId,
         stars: balance
@@ -76,18 +189,32 @@ app.get('/api/user-balance/:userId', (req, res) => {
 
 // ==================== INVOICE ENDPOINTS ====================
 
-// Create and send invoice
+/**
+ * Create and send invoice
+ */
 app.post('/payment', async (req, res) => {
     const { payload } = req.query;
-
+    
     try {
         if (!payload) {
-            return res.status(400).json({ error: 'Missing payload' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Missing payload' 
+            });
         }
-
+        
         const data = JSON.parse(decodeURIComponent(payload));
         const { user_id, stars, username } = data;
-
+        
+        // Verify user session
+        const session = userSessions.get(parseInt(user_id));
+        if (!session || !session.verified) {
+            return res.status(401).json({ 
+                success: false,
+                error: 'User not verified' 
+            });
+        }
+        
         // Create invoice
         await bot.sendInvoice(
             user_id,
@@ -98,69 +225,95 @@ app.post('/payment', async (req, res) => {
             'XTR', // Telegram Stars currency
             [{ label: `${stars} Stars`, amount: stars }]
         );
-
-        res.json({ success: true, message: 'Invoice sent' });
+        
+        res.json({ 
+            success: true, 
+            message: 'Invoice sent' 
+        });
     } catch (error) {
-        console.error('Invoice error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Invoice error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
     }
 });
 
 // ==================== TELEGRAM BOT HANDLERS ====================
 
-// Handle successful payment
+/**
+ * Handle successful payment
+ */
 bot.on('successful_payment', async (msg) => {
     const { successful_payment } = msg;
     const userId = msg.from.id;
     const stars = successful_payment.total_amount;
-
+    
     // Credit stars
-    userStars[userId] = (userStars[userId] || 0) + stars;
-
+    const currentStars = userStars.get(userId) || 0;
+    userStars.set(userId, currentStars + stars);
+    
     // Send confirmation
     bot.sendMessage(
         userId,
-        `✅ Payment successful!\n\n⭐ You received ${stars} Telegram Stars\n\nTotal Stars: ${userStars[userId]}`
+        `✅ Payment successful!\n\n⭐ You received ${stars} Telegram Stars\n\nTotal Stars: ${userStars.get(userId)}`
     );
-
+    
     console.log(`💰 Payment received: User ${userId} paid ${stars} stars`);
 });
 
-// Handle pre-checkout queries
+/**
+ * Handle pre-checkout queries
+ */
 bot.on('pre_checkout_query', async (query) => {
-    const { id, from } = query;
-
+    const { id } = query;
+    
     // Approve payment
     bot.answerPreCheckoutQuery(id, true);
 });
 
-// Handle /start command
+/**
+ * Handle /start command
+ */
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const userBalance = userStars[userId] || 0;
-
+    const username = msg.from.username || msg.from.first_name;
+    const userBalance = userStars.get(userId) || 0;
+    
+    // Store login info
+    userLogins.set(userId, {
+        timestamp: Date.now(),
+        username: username,
+        isPremium: msg.from.is_premium || false
+    });
+    
     const keyboard = {
         inline_keyboard: [
             [{ text: '⭐ Buy Stars', callback_data: 'buy_stars' }],
             [{ text: '🎰 Play Game', callback_data: 'play_game' }],
-            [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
+            [{ text: '💰 Check Balance', callback_data: 'check_balance' }],
+            [{ text: '📱 Open Mini App', url: process.env.WEBAPP_URL || 'https://your-app.com' }]
         ]
     };
-
+    
     bot.sendMessage(
         chatId,
-        `Welcome to Diamond Slots! 🎰\n\nYour balance: ⭐ ${userBalance} stars`,
+        `🎰 Welcome to Diamond Slots!\n\n👤 ${username}\n⭐ Your balance: ${userBalance} stars`,
         { reply_markup: keyboard }
     );
+    
+    console.log(`🎮 User started: ${username} (ID: ${userId})`);
 });
 
-// Handle callback queries
+/**
+ * Handle callback queries
+ */
 bot.on('callback_query', async (query) => {
     const { id, from, data } = query;
     const userId = from.id;
     const chatId = query.message.chat.id;
-
+    
     if (data === 'buy_stars') {
         const starPackages = {
             inline_keyboard: [
@@ -170,13 +323,18 @@ bot.on('callback_query', async (query) => {
                 [{ text: 'Back', callback_data: 'back' }]
             ]
         };
-
+        
         bot.editMessageText(
             'Select a star package:',
-            { chat_id: chatId, message_id: query.message.message_id, reply_markup: starPackages }
+            { 
+                chat_id: chatId, 
+                message_id: query.message.message_id, 
+                reply_markup: starPackages 
+            }
         );
     } else if (data.startsWith('buy_')) {
         const amount = parseInt(data.split('_')[1]);
+        
         // Send invoice
         await bot.sendInvoice(
             chatId,
@@ -188,10 +346,11 @@ bot.on('callback_query', async (query) => {
             [{ label: `${amount} Stars`, amount }]
         );
     } else if (data === 'check_balance') {
-        const balance = userStars[userId] || 0;
-        bot.answerCallbackQuery(id, `Your balance: ⭐ ${balance} stars`, true);
+        const balance = userStars.get(userId) || 0;
+        bot.answerCallbackQuery(id, `💰 Your balance: ⭐ ${balance} stars`, true);
     } else if (data === 'back') {
-        const balance = userStars[userId] || 0;
+        const balance = userStars.get(userId) || 0;
+        const username = from.username || from.first_name;
         const keyboard = {
             inline_keyboard: [
                 [{ text: '⭐ Buy Stars', callback_data: 'buy_stars' }],
@@ -199,21 +358,57 @@ bot.on('callback_query', async (query) => {
                 [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
             ]
         };
+        
         bot.editMessageText(
-            `Welcome to Diamond Slots! 🎰\n\nYour balance: ⭐ ${balance} stars`,
-            { chat_id: chatId, message_id: query.message.message_id, reply_markup: keyboard }
+            `🎰 Welcome to Diamond Slots!\n\n👤 ${username}\n⭐ Your balance: ${balance} stars`,
+            { 
+                chat_id: chatId, 
+                message_id: query.message.message_id, 
+                reply_markup: keyboard 
+            }
         );
     }
-
+    
     bot.answerCallbackQuery(id);
 });
+
+// ==================== STATUS ENDPOINT ====================
+
+app.get('/api/status', (req, res) => {
+    res.json({
+        status: 'running',
+        activeUsers: userSessions.size,
+        totalPayments: userPayments.size,
+        botConnected: BOT_TOKEN ? '✅' : '❌',
+        timestamp: new Date()
+    });
+});
+
+// ==================== HELPER FUNCTIONS ====================
+
+/**
+ * Generate session token
+ */
+function generateSessionToken() {
+    return Math.random().toString(36).substr(2) + Date.now().toString(36);
+}
 
 // ==================== SERVER STARTUP ====================
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(`🚀 Payment server running on port ${PORT}`);
+    console.log(`\n🚀 ============================================`);
+    console.log(`   Diamond SlotBox Server Running`);
+    console.log(`============================================`);
+    console.log(`🌐 Server: http://localhost:${PORT}`);
     console.log(`📱 Bot token: ${BOT_TOKEN ? '✅ Configured' : '❌ Missing'}`);
     console.log(`💳 Payment provider: ${PAYMENT_PROVIDER_TOKEN ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`============================================\n`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n👋 Shutting down server...');
+    process.exit(0);
 });
